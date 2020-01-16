@@ -1,0 +1,160 @@
+//garagefridge3 for ESP-01
+
+#include <ESP8266WiFi.h>
+#include <OneWire.h>  // onewire driver
+#include <DallasTemperature.h>  // ds18b20 driver
+#include "ThingSpeak.h"
+
+float freezerTemp = 999;
+float fridgeTemp = 999;
+float garageTemp = 999;
+int coolingMode = 0;
+const char ssid1[] = "XXXXXXXX";                               // your network SSID (name)
+const char pass[] = "XXXXXXXX";                                // your network password
+unsigned long myChannelNumber = 123456;                          // ThingSpeak Channel number
+const char * myWriteAPIKey = "XXXXXXXXXXXXXX";                 // ThingSpeak Write API Key
+
+#define ONE_WIRE_BUS 0 // Data wire is plugged TO GPIO 0
+OneWire oneWire(ONE_WIRE_BUS);  // Setup a oneWire instance to communicate with any OneWire devices (not just Maxim/Dallas temperature ICs)
+DallasTemperature sensors(&oneWire); // Pass our oneWire reference to Dallas Temperature.
+int numberOfDevices; // Number of temperature devices found
+DeviceAddress tempDeviceAddress; // We'll use this variable to store a found device address
+WiFiClient client;
+
+void setup(){
+  Serial.begin(115200);
+  delay (5000);  //delay 5 sec to get serial putty session up
+  sensors.begin();   // Start up the library
+  ThingSpeak.begin(client);  // Start up the ThingSpeak library
+  numberOfDevices = sensors.getDeviceCount();   // Grab a count of devices on the wire
+  pinMode(2, OUTPUT);
+  digitalWrite(2, LOW); //sets initial light to off
+  
+  // Connect to Wifi 1
+  Serial.print("Connecting to ");
+  Serial.println(ssid1);
+  WiFi.begin(ssid1, pass); // Start up the Wifi library
+ 
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+   
+  Serial.println("");
+  Serial.print("IP number assigned by DHCP is ");
+  Serial.println(WiFi.localIP());
+
+  // locate devices on the bus
+  Serial.print("Locating devices...");
+  Serial.print("Found ");
+  Serial.print(numberOfDevices, DEC);
+  Serial.println(" devices.");
+
+  // Loop through each device, print out address
+  for(int i=0;i<numberOfDevices; i++){
+    if(sensors.getAddress(tempDeviceAddress, i)){
+      Serial.print("Found device ");
+      Serial.print(i, DEC);
+      Serial.print(" with address: ");
+      printAddress(tempDeviceAddress);
+      Serial.println();
+    } else {
+      Serial.print("Found ghost device at ");
+      Serial.print(i, DEC);
+      Serial.print(" but could not detect address. Check power and cabling");
+    }
+  }
+}
+
+void loop(){
+  Serial.println("start of loop");
+  Serial.println();
+  sensors.requestTemperatures(); // Send the command to get temperatures
+
+  for(int i=0;i<numberOfDevices; i++){
+    if(sensors.getAddress(tempDeviceAddress, i)){
+      Serial.print("Temperature for device: ");
+      Serial.println(i,DEC);
+      float tempC = sensors.getTempC(tempDeviceAddress);
+      Serial.print(" Temp F: ");
+      Serial.println(DallasTemperature::toFahrenheit(tempC)); // Converts tempC to Fahrenheit
+      if (i==0){
+        fridgeTemp = DallasTemperature::toFahrenheit(tempC);
+      }
+	  if (i==1){
+        freezerTemp = DallasTemperature::toFahrenheit(tempC);
+      }
+      if (i==2){
+        garageTemp = DallasTemperature::toFahrenheit(tempC);
+      }
+    }
+  }
+
+//coolingMode setting - 0 normal fridge operation; 1 freezer too warm; 2 fridge too cold
+  if (freezerTemp > 8){
+    Serial.println("cooling mode 1");
+    coolingMode = 1;
+  }
+  if (coolingMode == 1 && freezerTemp < -10) {
+    Serial.println("cooling mode 0 freezer reset");
+    coolingMode = 0;
+  }
+  if (garageTemp < 35 && (fridgeTemp < 26 && coolingMode == 0)) {
+    Serial.println("cooling mode 2");
+    coolingMode = 2;
+  }
+  if (fridgeTemp > 26 && coolingMode == 2) {
+    Serial.println("cooling mode 2 fridge reset");
+    coolingMode = 0;
+  }
+
+  Serial.print("Cooling Mode : ");
+  Serial.println(coolingMode);
+   
+  if (coolingMode != 0) {
+    digitalWrite(2, HIGH);
+    Serial.println("pin high");
+  }
+  if (coolingMode == 0) {
+    digitalWrite(2, LOW);
+    Serial.println("pin low");
+  }
+  
+  //3 minute delay
+  for(int j=0;j<295; j++){
+    delay(1000); // delay = 1 sec
+  }
+
+  ThingSpeakUpdate();
+}
+
+// function to print a device address
+void printAddress(DeviceAddress deviceAddress) {
+  for (uint8_t i = 0; i < 8; i++){
+    if (deviceAddress[i] < 16) Serial.print("0");
+      Serial.print(deviceAddress[i], HEX);
+  }
+}
+
+void ThingSpeakUpdate() {
+  Serial.println();
+  Serial.println("ThingSpeak subroutine started...");
+  Serial.print("Number of devices : ");
+  Serial.println(numberOfDevices);
+  for(int i=0;i<numberOfDevices; i++){
+    Serial.print("Temp C in TS subroutine ");
+    if(sensors.getAddress(tempDeviceAddress, i)){
+      float tempC = sensors.getTempC(tempDeviceAddress);
+      ThingSpeak.setField((i+1), (DallasTemperature::toFahrenheit(tempC))); // Update ThingSpeak field
+      Serial.println(i);
+      Serial.println(tempC);
+    }
+  }
+  ThingSpeak.setField(4, coolingMode); // Update ThingSpeak field
+  int httpCode = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  Serial.print("HTTP return Code : ");
+  Serial.println(httpCode);
+  Serial.println(myChannelNumber);
+  Serial.println(myWriteAPIKey);
+  Serial.println("ThingSpeak subroutine ended");
+}
